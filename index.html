@@ -1,0 +1,107 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quiz do Rei</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#1b1340;color:#fff;min-height:100vh}
+#app{max-width:480px;margin:0 auto;padding:20px}h1{text-align:center;color:#ffd54a}h2{margin:.4em 0}
+input{width:100%;padding:12px;margin:5px 0;border-radius:10px;border:0;font-size:16px}
+button{width:100%;padding:14px;margin:6px 0;border:0;border-radius:12px;font-size:17px;font-weight:700;background:#ffd54a;color:#1b1340;cursor:pointer}
+button.o{background:#5b3fd6;color:#fff}button.s{background:#2d2266;color:#fff;padding:8px;font-size:14px}
+.card{background:#2d2266;border-radius:14px;padding:14px;margin:10px 0}.big{font-size:42px;text-align:center;color:#ffd54a;letter-spacing:6px}
+.row{display:flex;gap:6px}.row button{padding:10px}li{margin:6px 0}small{opacity:.8}
+</style></head><body><div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const app=document.getElementById('app'),view=h=>app.innerHTML=h,$=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let peer,conns={},players={},qs=[],cur=-1,phase='',rateIds=[],rate={},bonus={},hist={},conn=null;
+
+// ---- detector de resposta parecida ----
+const norm=s=>s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+function lev(a,b){const d=Array.from({length:a.length+1},(_,i)=>[i,...Array(b.length).fill(0)]);
+ for(let j=1;j<=b.length;j++)d[0][j]=j;
+ for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)
+  d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
+ return d[a.length][b.length]}
+function match(ans,list){const p=norm(ans);if(!p)return null;
+ for(const c of list){const n=norm(c);if(!n)continue;const a=p.replace(/ /g,''),b=n.replace(/ /g,'');
+  const tol=b.length<=4?0:b.length<=8?1:2;
+  if(lev(a,b)<=tol||(' '+p+' ').includes(' '+n+' '))return c}
+ return null}
+
+function home(){view(`<h1>👑 Quiz do Rei</h1><div class=card><input id=nm placeholder="Seu nome" maxlength=15>
+<button onclick="createRoom()">Sou o REI (criar sala)</button><input id=cd placeholder="Código da sala (4 números)" inputmode=numeric>
+<button class=o onclick="join()">Entrar na sala</button></div>`)}
+
+// ---------- REI ----------
+function createRoom(){
+ const code=Math.floor(1000+Math.random()*9000);
+ peer=new Peer('quizrei-'+code);
+ peer.on('error',e=>e.type==='unavailable-id'?createRoom():alert('Erro: '+e.type));
+ peer.on('open',()=>lobby(code));
+ peer.on('connection',c=>{
+  c.on('data',d=>{
+   if(d.t==='join'){conns[c.peer]=c;players[c.peer]={name:d.name||'Jogador',score:0,ans:null};plist()}
+   if(d.t==='a')onAnswer(c.peer,d)});
+  c.on('close',()=>{delete conns[c.peer];delete players[c.peer];plist()})});
+}
+function lobby(code){view(`<h1>👑 Sala</h1><p style="text-align:center">Passe este código aos primos:</p><div class=big>${code}</div>
+<div class=card><b>Jogadores:</b><div id=pl></div></div>
+<div class=card><h2>Perguntas sobre você</h2><input id=q placeholder="Pergunta (ex: Qual meu jogo favorito?)">
+<input id=c1 placeholder="✅ Resposta certa"><input id=c2 placeholder="➕ Outra resposta aceita (opcional)"><input id=c3 placeholder="➕ Outra resposta aceita (opcional)">
+<small>Quem acertar em cheio ganha +2 de bônus. Erros pequenos de escrita (tipo "hollow kight") contam como acerto.</small>
+<button class=o onclick="addQ()">+ Adicionar pergunta</button><div id=ql></div></div>
+<button onclick="start()">▶ Começar o jogo</button>`);plist();qlist()}
+function plist(){const e=$('pl');if(e){const n=Object.values(players);e.innerHTML=n.length?n.map(p=>'👤 '+esc(p.name)).join('<br>'):'Ninguém ainda...'}}
+function addQ(){const v=id=>$(id).value.trim(),c=[v('c1'),v('c2'),v('c3')].filter(Boolean);
+ if(!v('q')||!c.length)return alert('Escreva a pergunta e pelo menos 1 resposta certa');
+ qs.push({text:v('q'),c});['q','c1','c2','c3'].forEach(i=>$(i).value='');qlist()}
+function qlist(){$('ql').innerHTML=qs.map((q,i)=>`<div class=card>${i+1}. ${esc(q.text)}<br><small>✅ ${q.c.map(esc).join(' / ')}</small>
+<button class=s onclick="qs.splice(${i},1);qlist()">remover</button></div>`).join('')}
+function bc(m){Object.values(conns).forEach(c=>c.send(m))}
+function start(){if(!qs.length||!Object.keys(players).length)return alert('Precisa de pelo menos 1 pergunta e 1 jogador');
+ Object.values(players).forEach(p=>p.score=0);hist={};cur=-1;next()}
+function next(){cur++;if(cur>=qs.length)return end();
+ phase='answer';Object.values(players).forEach(p=>{p.ans=null;p.m=null});
+ bc({t:'q',n:cur+1,total:qs.length,text:qs[cur].text});
+ view(`<h2>Pergunta ${cur+1}/${qs.length}</h2><div class=card>${esc(qs[cur].text)}</div><div class=card id=cnt></div>
+ <button onclick="toRate()">Fechar respostas e dar notas ▶</button>`);cnt()}
+function cnt(){const n=Object.values(players),e=$('cnt');if(e)e.textContent=`Responderam: ${n.filter(p=>p.ans!==null).length}/${n.length}`}
+function onAnswer(id,d){if(phase!=='answer'||!players[id]||players[id].ans!==null)return;
+ players[id].ans=String(d.text||'').slice(0,80);cnt();
+ if(Object.values(players).every(p=>p.ans!==null))toRate()}
+function toRate(){if(phase!=='answer')return;phase='rate';bc({t:'w'});
+ rateIds=Object.keys(players).filter(id=>players[id].ans!==null);rate={};bonus={};
+ rateIds.forEach(id=>{const p=players[id];p.m=match(p.ans,qs[cur].c);rate[id]=p.m?5:1;bonus[id]=!!p.m});renderRate()}
+function setRate(i,v){rate[rateIds[i]]=v;renderRate()}
+function setBonus(i){const id=rateIds[i];bonus[id]=!bonus[id];renderRate()}
+function renderRate(){const q=qs[cur];
+ view(`<h2>Dê as notas (1 a 5)</h2><div class=card>${esc(q.text)}<br><small>Certas: ${q.c.map(esc).join(' / ')}</small></div>`+
+ (rateIds.length?rateIds.map((id,i)=>{const p=players[id];
+  return `<div class=card><b>${esc(p.name)}:</b> ${esc(p.ans)}${p.m?`<br><small>✅ parece com "${esc(p.m)}"</small>`:''}<div class=row>`+
+  [1,2,3,4,5].map(v=>`<button class="${rate[id]===v?'':'o'}" onclick="setRate(${i},${v})">${v}</button>`).join('')+`</div><button class="s ${bonus[id]?'':'o'}" style="${bonus[id]?'background:#ffd54a;color:#1b1340':''}" onclick="setBonus(${i})">⭐ Bônus +2 (acertou em cheio): ${bonus[id]?'SIM':'NÃO'}</button></div>`}).join(''):'<div class=card>Ninguém respondeu.</div>')+
+ `<button onclick="confirmRates()">${cur+1>=qs.length?'🏁 Finalizar jogo':'Próxima pergunta ▶'}</button>`)}
+function confirmRates(){Object.keys(players).forEach(id=>{const p=players[id],ok=rateIds.includes(id),n=ok?rate[id]:0,b=ok&&bonus[id]?2:0;
+ p.score+=n+b;(hist[id]=hist[id]||[]).push({q:qs[cur].text,a:ok?p.ans:null,n,b})});next()}
+function end(){const r=Object.keys(players).map(id=>({name:players[id].name,score:players[id].score,det:hist[id]||[]})).sort((a,b)=>b.score-a.score);
+ bc({t:'end',rank:r,max:qs.length*7});view(final(r,qs.length*7))}
+function final(r,max){return `<h1>🏆 Resultado final</h1>`+r.map((p,i)=>`<div class=card><b>${i+1}. ${esc(p.name)} — ${p.score}/${max}</b>
+ <details ${i==0?'open':''}><summary>Pontos por pergunta</summary>`+p.det.map(d=>`<p><small>${esc(d.q)}</small><br>${d.a===null?'<i>sem resposta</i>':esc(d.a)} → <b>${d.n+d.b} pts</b>${d.b?` (nota ${d.n} + ⭐2)`:''}</p>`).join('')+`</details></div>`).join('')+
+ `<p style="text-align:center">${r[0]?'👑 '+esc(r[0].name)+' deixou o rei mais feliz!':''}</p><button onclick="location.reload()">Jogar de novo</button>`}
+
+// ---------- JOGADOR ----------
+function join(){const name=$('nm').value.trim(),code=$('cd').value.trim();
+ if(!name||code.length!==4)return alert('Coloque seu nome e o código de 4 números');
+ view('<h2 style="text-align:center">Conectando...</h2>');
+ peer=new Peer();
+ peer.on('error',()=>{alert('Não achei essa sala. Confira o código.');home()});
+ peer.on('open',()=>{conn=peer.connect('quizrei-'+code,{reliable:true});
+  conn.on('open',()=>{conn.send({t:'join',name});view('<h1>✅ Você entrou!</h1><p style="text-align:center">Esperando o rei começar...</p>')});
+  conn.on('data',onMsg);conn.on('close',()=>{alert('A sala fechou');home()})})}
+function onMsg(m){
+ if(m.t==='q')view(`<h2>Pergunta ${m.n}/${m.total}</h2><div class=card>${esc(m.text)}</div>
+  <input id=ar placeholder="Digite sua resposta" maxlength=80 onkeydown="if(event.key==='Enter')sendAns()"><button onclick="sendAns()">Enviar resposta</button>`);
+ if(m.t==='w')view('<h1>👑 O rei está dando as notas...</h1><p style="text-align:center">Os pontos só aparecem no final!</p>');
+ if(m.t==='end')view(final(m.rank,m.max))}
+function sendAns(){const v=$('ar').value.trim();if(!v)return;conn.send({t:'a',text:v});
+ view('<h1>📨 Resposta enviada!</h1><p style="text-align:center">Esperando os outros...</p>')}
+home();
+</script></body></html>
